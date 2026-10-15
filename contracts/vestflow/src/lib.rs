@@ -68,6 +68,9 @@ pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 /// Maximum split weight a single receiver can have (100% = 1_000_000 parts per million).
 pub const TOTAL_SPLITS_WEIGHT: u128 = 1_000_000;
 
+/// Maximum number of receivers allowed in a splits configuration.
+pub const MAX_SPLITS_RECEIVERS: u32 = 100;
+
 #[contracterror]
 #[derive(Copy, Clone, Debug, Eq, PartialEq, PartialOrd, Ord)]
 #[repr(u32)]
@@ -118,6 +121,10 @@ pub enum VestFlowError {
     WeightTooLarge = 35,
     /// A drips list view was called with an ID that was never created.
     ListNotFound = 36,
+    /// `validate_splits_receivers` found two receivers sharing the same address.
+    DuplicateReceiver = 37,
+    /// `validate_splits_receivers` was given more receivers than `MAX_SPLITS_RECEIVERS`.
+    TooManyReceivers = 38,
 }
 
 #[contracttype]
@@ -5753,6 +5760,84 @@ impl VestFlowContract {
             .instance()
             .get::<_, Vec<SplitReceiver>>(&DataKey::Splits(account.clone()))
             .unwrap_or_else(|| vec![&env])
+    }
+
+    /// Validate a proposed splits receiver list without modifying any state.
+    ///
+    /// Returns a list of every error found.  An empty list means the receivers
+    /// are valid and would be accepted by `set_splits`.  Multiple errors can be
+    /// present at once — each rule is checked independently.
+    ///
+    /// Rules checked (in order):
+    /// 1. Empty list is always valid — returns an empty error list immediately.
+    /// 2. `TooManyReceivers` — more than `MAX_SPLITS_RECEIVERS` entries.
+    /// 3. `DuplicateReceiver` — the same address appears more than once.
+    /// 4. `WeightZero` — any receiver has a zero weight.
+    /// 5. `WeightTooLarge` — any single receiver's weight exceeds `TOTAL_SPLITS_WEIGHT`.
+    /// 6. `AmountZero` — the total weight across all receivers does not equal
+    ///    `TOTAL_SPLITS_WEIGHT` (reuses `AmountZero` to mean "sum mismatch").
+    ///
+    /// Does not require authorisation.  Does not read or write any storage key.
+    pub fn validate_splits_receivers(
+        env: Env,
+        receivers: Vec<SplitReceiver>,
+    ) -> Vec<VestFlowError> {
+        let mut errors: Vec<VestFlowError> = Vec::new(&env);
+
+        if receivers.is_empty() {
+            return errors;
+        }
+
+        if receivers.len() > MAX_SPLITS_RECEIVERS {
+            errors.push_back(VestFlowError::TooManyReceivers);
+        }
+
+        // Collect address-type receivers to detect duplicates.
+        let mut seen: Vec<Address> = Vec::new(&env);
+        let mut has_duplicate = false;
+        for r in receivers.iter() {
+            if let SplitReceiver::Address(ref entry) = r {
+                if seen.contains(&entry.receiver) {
+                    has_duplicate = true;
+                } else {
+                    seen.push_back(entry.receiver.clone());
+                }
+            }
+        }
+        if has_duplicate {
+            errors.push_back(VestFlowError::DuplicateReceiver);
+        }
+
+        // Per-receiver weight validation.
+        let mut weight_error = false;
+        for r in receivers.iter() {
+            let w = match &r {
+                SplitReceiver::Address(a) => a.weight,
+                SplitReceiver::Nft(n) => n.weight,
+            };
+            if w == 0 && !weight_error {
+                errors.push_back(VestFlowError::WeightZero);
+                weight_error = true;
+            }
+            if w > TOTAL_SPLITS_WEIGHT {
+                errors.push_back(VestFlowError::WeightTooLarge);
+                break;
+            }
+        }
+
+        // Total weight must equal TOTAL_SPLITS_WEIGHT.
+        let total: u128 = receivers
+            .iter()
+            .map(|r| match &r {
+                SplitReceiver::Address(a) => a.weight,
+                SplitReceiver::Nft(n) => n.weight,
+            })
+            .sum();
+        if total != TOTAL_SPLITS_WEIGHT {
+            errors.push_back(VestFlowError::AmountZero);
+        }
+
+        errors
     }
 
     /// Remove a single fixed-address splits receiver and redistribute its freed
@@ -13720,6 +13805,83 @@ mod test {
         let (client, funder, _, token_address, _) = setup(&env);
 
         client.set_stream_and_splits(&funder, &token_address, &vec![&env], &0, &vec![&env]);
+    }
+
+    // ── validate_splits_receivers (#1110) ─────────────────────────────────────
+
+    /// Empty receiver list is valid; returns no errors.
+    #[test]
+    fn test_validate_splits_receivers_empty_is_valid() {
+        let env = Env::default();
+        let (client, _, _, _, _) = setup(&env);
+
+        let errors = client.validate_splits_receivers(&vec![&env]);
+
+        assert_eq!(errors.len(), 0);
+    }
+
+    /// Weight sum mismatch returns AmountZero error.
+    #[test]
+    fn test_validate_splits_receivers_weight_sum_mismatch() {
+        let env = Env::default();
+        let (client, _, _, _, _) = setup(&env);
+        let receiver = Address::generate(&env);
+
+        // Weight 1 does not equal TOTAL_SPLITS_WEIGHT.
+        let receivers = vec![
+            &env,
+            SplitReceiver::Address(AddressSplitsReceiver {
+                receiver,
+                weight: 1,
+            }),
+        ];
+        let errors = client.validate_splits_receivers(&receivers);
+
+        assert!(errors.contains(&VestFlowError::AmountZero));
+    }
+
+    /// Duplicate address receiver returns DuplicateReceiver error.
+    #[test]
+    fn test_validate_splits_receivers_duplicate_receiver() {
+        let env = Env::default();
+        let (client, _, _, _, _) = setup(&env);
+        let receiver = Address::generate(&env);
+
+        let receivers = vec![
+            &env,
+            SplitReceiver::Address(AddressSplitsReceiver {
+                receiver: receiver.clone(),
+                weight: TOTAL_SPLITS_WEIGHT / 2,
+            }),
+            SplitReceiver::Address(AddressSplitsReceiver {
+                receiver: receiver.clone(),
+                weight: TOTAL_SPLITS_WEIGHT / 2,
+            }),
+        ];
+        let errors = client.validate_splits_receivers(&receivers);
+
+        assert!(errors.contains(&VestFlowError::DuplicateReceiver));
+    }
+
+    /// Over MAX_SPLITS_RECEIVERS entries returns TooManyReceivers error.
+    #[test]
+    fn test_validate_splits_receivers_over_max_count() {
+        let env = Env::default();
+        env.budget().reset_unlimited();
+        let (client, _, _, _, _) = setup(&env);
+
+        let count = MAX_SPLITS_RECEIVERS + 1;
+        let per_receiver: u128 = TOTAL_SPLITS_WEIGHT / count as u128;
+        let mut receivers: soroban_sdk::Vec<SplitReceiver> = Vec::new(&env);
+        for _ in 0..count {
+            receivers.push_back(SplitReceiver::Address(AddressSplitsReceiver {
+                receiver: Address::generate(&env),
+                weight: per_receiver,
+            }));
+        }
+        let errors = client.validate_splits_receivers(&receivers);
+
+        assert!(errors.contains(&VestFlowError::TooManyReceivers));
     }
 
     #[test]
