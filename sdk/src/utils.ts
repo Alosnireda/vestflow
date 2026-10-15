@@ -6,6 +6,7 @@
 // Safe to use in any environment (browser, Node.js, React Native).
 // ===========================================================================
 
+import { StrKey } from "@stellar/stellar-sdk";
 import type { ScheduleData } from "./types";
 
 /**
@@ -306,3 +307,63 @@ export function formatSchedule(
     progressPct,
   };
 }
+
+// ---------------------------------------------------------------------------
+// isStellarAddress (#1107) & formatXlm (#1106)
+// ---------------------------------------------------------------------------
+
+/**
+ * Validate whether a string is a valid Stellar public key (G... address).
+ *
+ * Uses StrKey.isValidEd25519PublicKey without making any network calls.
+ *
+ * @param address - Address string to validate
+ * @returns true if valid Stellar public key, false otherwise
+ */
+export function isStellarAddress(address: unknown): boolean {
+  if (typeof address !== "string") return false;
+  return StrKey.isValidEd25519PublicKey(address);
+}
+
+/**
+ * Format a stroop amount (1 XLM = 10,000,000 stroops) into a human-readable XLM string.
+ *
+ * Supports bigint, number, or numeric string inputs.
+ * Uses integer arithmetic to avoid floating point precision issues.
+ * Trims trailing zeros in the fractional part, displaying whole numbers without decimal points.
+ * Correctly formats negative values and extreme boundary values (e.g. min/max i128).
+ *
+ * @param stroops - The amount in stroops (bigint | number | string)
+ * @param maxFractionDigits - Maximum fractional digits to show (default: 7)
+ */
+export function formatXlm(
+  stroops: bigint | number | string,
+  maxFractionDigits: number = 7,
+): string {
+  const raw = BigInt(stroops);
+  const isNegative = raw < 0n;
+  const abs = isNegative ? -raw : raw;
+  const scale = 10_000_000n;
+  const whole = abs / scale;
+  const fraction = abs % scale;
+
+  const digits = Math.max(0, Math.min(7, maxFractionDigits));
+  if (digits === 0) {
+    return isNegative && whole !== 0n ? `-${whole}` : whole.toString();
+  }
+
+  const dropExponent = 7 - digits;
+  const truncated =
+    dropExponent > 0 ? fraction / 10n ** BigInt(dropExponent) : fraction;
+  const fractionStr = truncated
+    .toString()
+    .padStart(digits, "0")
+    .replace(/0+$/, "");
+
+  const result =
+    fractionStr.length > 0 ? `${whole}.${fractionStr}` : whole.toString();
+  return isNegative && (whole !== 0n || fractionStr.length > 0)
+    ? `-${result}`
+    : result;
+}
+
