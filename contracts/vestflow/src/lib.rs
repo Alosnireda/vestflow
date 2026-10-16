@@ -14843,4 +14843,112 @@ mod test {
             &history,
         );
     }
+
+    #[test]
+    fn test_pause_unpause_streams_full_cycle() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let (client, grantor, beneficiary, token_addr, _) = setup(&env);
+        let token = TokenClient::new(&env, &token_addr);
+
+        set_time(&env, 0);
+        let id = client.create_schedule(
+            &grantor,
+            &beneficiary,
+            &token_addr,
+            &1000,
+            &0,
+            &1000,
+            &0,
+            &0,
+            &VestingKind::Linear,
+            &true,
+        );
+
+        set_time(&env, 250);
+        let claimable_before_pause = client.claimable(&id);
+        assert_eq!(claimable_before_pause, 250);
+
+        client.pause_streams(&grantor, &vec![&env, id.clone()]);
+        let schedule = client.get_schedule(&id);
+        assert!(schedule.paused);
+        assert_eq!(schedule.paused_at, 250);
+
+        set_time(&env, 500);
+        let claimable_while_paused = client.claimable(&id);
+        assert_eq!(claimable_while_paused, 250);
+
+        client.unpause_streams(&grantor, &vec![&env, id.clone()]);
+        let schedule = client.get_schedule(&id);
+        assert!(!schedule.paused);
+        assert_eq!(schedule.paused_at, 0);
+
+        set_time(&env, 750);
+        let claimable_after_unpause = client.claimable(&id);
+        assert_eq!(claimable_after_unpause, 500);
+
+        client.claim(&id);
+        assert_eq!(token.balance(&beneficiary), 500);
+        assert_eq!(client.claimable(&id), 0);
+    }
+
+    #[test]
+    fn test_pause_resume_multiple_streams() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let (client, grantor, beneficiary, token_addr, _) = setup(&env);
+
+        set_time(&env, 0);
+        let id1 = client.create_schedule(
+            &grantor,
+            &beneficiary,
+            &token_addr,
+            &1000,
+            &0,
+            &1000,
+            &0,
+            &0,
+            &VestingKind::Linear,
+            &true,
+        );
+
+        let id2 = client.create_schedule(
+            &grantor,
+            &beneficiary,
+            &token_addr,
+            &500,
+            &0,
+            &500,
+            &0,
+            &0,
+            &VestingKind::Linear,
+            &true,
+        );
+
+        set_time(&env, 250);
+
+        client.pause_streams(&grantor, &vec![&env, id1.clone(), id2.clone()]);
+
+        let s1 = client.get_schedule(&id1);
+        let s2 = client.get_schedule(&id2);
+        assert!(s1.paused);
+        assert!(s2.paused);
+
+        set_time(&env, 500);
+
+        assert_eq!(client.claimable(&id1), 250);
+        assert_eq!(client.claimable(&id2), 125);
+
+        client.unpause_streams(&grantor, &vec![&env, id1.clone(), id2.clone()]);
+
+        let s1 = client.get_schedule(&id1);
+        let s2 = client.get_schedule(&id2);
+        assert!(!s1.paused);
+        assert!(!s2.paused);
+
+        set_time(&env, 750);
+
+        assert_eq!(client.claimable(&id1), 500);
+        assert_eq!(client.claimable(&id2), 250);
+    }
 }
