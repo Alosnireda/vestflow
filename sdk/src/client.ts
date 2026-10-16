@@ -177,6 +177,52 @@ export class VestflowClient {
     return (result as any).result!.retval;
   }
 
+  // ── Fee estimation ─────────────────────────────────────────────────────
+
+  /**
+   * Estimates the network fee for a contract call without building or
+   * submitting a transaction (#1096).
+   *
+   * Simulates the call the same way {@link simulate} and the write methods
+   * do, then reads the resource fee Soroban RPC computed off the
+   * simulation's resource usage.
+   *
+   * @param contractCall - The method name and arguments to estimate
+   * @param contractCall.method - Contract method name, e.g. "createSchedule"
+   * @param contractCall.args - ScVal arguments for the call
+   * @param contractCall.publicKey - Optional source account; falls back to
+   *   a well-known placeholder account when omitted (mirrors {@link simulate})
+   * @returns `resourceFee` (the simulated resource fee alone) and
+   *   `totalFee` (`resourceFee` plus the inclusion fee a built transaction
+   *   would pay), both in stroops
+   */
+  async estimateFee(contractCall: {
+    method: string;
+    args: xdr.ScVal[];
+    publicKey?: string;
+  }): Promise<{ resourceFee: bigint; totalFee: bigint }> {
+    const { method, args, publicKey } = contractCall;
+    const contract = new Contract(this.contractId);
+    const source = publicKey ?? FALLBACK_ACCOUNT;
+    const account = await this.server.getAccount(source);
+    const tx = new TransactionBuilder(account, {
+      fee: BASE_FEE,
+      networkPassphrase: this.networkPassphrase,
+    })
+      .addOperation(contract.call(method, ...args))
+      .setTimeout(30)
+      .build();
+
+    const result = await this.server.simulateTransaction(tx);
+    if (StellarRpc.Api.isSimulationError(result)) {
+      throw new Error((result as any).error);
+    }
+
+    const resourceFee = BigInt((result as any).minResourceFee ?? "0");
+    const totalFee = BigInt(BASE_FEE) + resourceFee;
+    return { resourceFee, totalFee };
+  }
+
   // ── Internal: build, send, and wait for settlement ────────────────────────
 
   private async submitAndSettle(
