@@ -18,6 +18,8 @@ export {
   formatCycleDuration,
   isStellarAddress,
   formatXlm,
+  DripsErrorCode,
+  parseDripsErrorCode,
 } from "./utils";
 export type { ScheduleSummary } from "./utils";
 export { isScheduleRevoked, ProfileError } from "./types";
@@ -51,6 +53,9 @@ export type {
   GiveHistoryOptions,
   DripsListSummary,
   ProfileSummary,
+  DripsListMember,
+  PaginationOptions,
+  SupportedToken,
 } from "./types";
 export { waitForTransaction, TimeoutError } from "./waitForTransaction";
 export type {
