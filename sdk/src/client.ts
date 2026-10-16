@@ -44,6 +44,9 @@ import type {
   GiveHistoryOptions,
   DripsListSummary,
   SplitsReceiver,
+  DripsListMember,
+  PaginationOptions,
+  SupportedToken,
 } from "./types";
 import { ProfileError } from "./types";
 import { xlmToStroops } from "./utils";
@@ -402,6 +405,44 @@ export class VestflowClient {
       ratePerSec: BigInt(String(item.ratePerSec ?? item.rate_per_sec ?? 0)),
       maxEndTime: Number(item.maxEndTime ?? item.max_end_time ?? 0),
     }));
+  }
+
+  /** Fetch the current members of a Drips list from the indexer. */
+  async getDripsListMembers(
+    listId: string,
+    options: PaginationOptions = {},
+  ): Promise<{ items: DripsListMember[]; nextCursor?: string }> {
+    const params = new URLSearchParams({ network: this.network });
+    if (options.cursor) params.set("cursor", options.cursor);
+    if (options.limit !== undefined) params.set("limit", String(options.limit));
+    const url = `${this.indexerUrl.replace(/\/$/, "")}/lists/${encodeURIComponent(listId)}/members?${params}`;
+    const res = await fetch(url, { headers: { Accept: "application/json" } });
+    if (!res.ok) throw new Error(`Indexer request failed: ${res.status} ${res.statusText}`);
+    const body = (await res.json()) as { members?: Record<string, unknown>[]; next_cursor?: string | null };
+    return {
+      items: (body.members ?? []).map((member) => ({
+        address: String(member.address ?? ""),
+        joinedAt: Number(member.joinedAt ?? member.joined_at ?? 0),
+      })),
+      nextCursor: body.next_cursor ?? undefined,
+    };
+  }
+
+  /** Fetch tokens supported by the configured indexer. */
+  async getTokenList(): Promise<SupportedToken[]> {
+    try {
+      const url = `${this.indexerUrl.replace(/\/$/, "")}/tokens/supported?network=${encodeURIComponent(this.network)}`;
+      const res = await fetch(url, { headers: { Accept: "application/json" } });
+      if (!res.ok) return [];
+      const body = (await res.json()) as { tokens?: Record<string, unknown>[] } | Record<string, unknown>[];
+      const tokens = Array.isArray(body) ? body : body.tokens ?? [];
+      return tokens.map((token) => ({
+        address: String(token.address ?? token.token ?? ""),
+        displayName: String(token.displayName ?? token.display_name ?? token.name ?? ""),
+      }));
+    } catch {
+      return [];
+    }
   }
 
   /**

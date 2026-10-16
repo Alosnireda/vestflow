@@ -9,6 +9,59 @@
 import { StrKey } from "@stellar/stellar-sdk";
 import type { ScheduleData } from "./types";
 
+/** Numeric error codes emitted by the VestFlow contract. */
+export enum DripsErrorCode {
+  NotFound = 1,
+  NotRevocable = 2,
+  AlreadyRevoked = 3,
+  NothingToClaim = 4,
+  AmountZero = 5,
+  DurationZero = 6,
+  CliffExceedsDuration = 7,
+  ScheduleRevoked = 8,
+  LockupLessThanCliff = 9,
+  InvalidToken = 10,
+  ProposalNotFound = 11,
+  ProposalNotExpired = 12,
+  ProposalExpired = 13,
+  ProposalAlreadyActivated = 14,
+  DurationTooShort = 15,
+  DelegationNotFound = 16,
+  DelegationRevoked = 17,
+  DelegationExpired = 18,
+  DelegationExhausted = 19,
+  NotDelegate = 20,
+  TooManyDelegations = 21,
+  MergeTypeMismatch = 22,
+  MergeTooFewSchedules = 23,
+  MergeTooManySchedules = 24,
+  MergeTokenMismatch = 25,
+  MergeOwnerMismatch = 26,
+  NftOwnerNotFound = 27,
+  NoSplits = 28,
+  SlotAlreadyClaimed = 29,
+  BatchExpired = 30,
+  InvalidProof = 31,
+  NotExpired = 32,
+  ProofTooDeep = 33,
+  WeightZero = 34,
+  WeightTooLarge = 35,
+  ListNotFound = 36,
+  DuplicateReceiver = 37,
+  TooManyReceivers = 38,
+}
+
+/** Extract a typed contract error code from Soroban error text. */
+export function parseDripsErrorCode(error: unknown): DripsErrorCode | undefined {
+  const message = error instanceof Error ? error.message : String(error);
+  const match = message.match(/(?:Contract(?: error|,)?|error)\D+(\d+)/i);
+  if (!match) return undefined;
+  const code = Number(match[1]);
+  return Number.isInteger(code) && code >= 1 && code <= 38
+    ? (code as DripsErrorCode)
+    : undefined;
+}
+
 /**
  * Convert an XLM amount string to stroops using integer-only arithmetic.
  *
