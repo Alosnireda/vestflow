@@ -10723,6 +10723,42 @@ mod test {
     }
 
     #[test]
+    fn test_add_drips_list_members_batch_of_twenty_addresses() {
+        // Members are added one at a time (there is no bulk add-members
+        // entry point), but this exercises a list at the 20-member scale a
+        // real drips list might reach (#1099): every address lands at its
+        // expected index, the count tracks accurately, and funding splits
+        // evenly across all 20 once they're in.
+        let env = Env::default();
+        env.mock_all_auths();
+        let (client, owner, _, token_address, _) = setup(&env);
+
+        let list_id =
+            client.create_drips_list(&owner, &soroban_sdk::String::from_str(&env, "Big Team"));
+
+        let members: std::vec::Vec<Address> = (0..20).map(|_| Address::generate(&env)).collect();
+        for member in &members {
+            client.add_to_drips_list(&owner, &list_id, member);
+        }
+
+        assert_eq!(client.get_drips_list_member_count(&list_id).unwrap(), 20);
+        let list = client.get_drips_list(&list_id).unwrap();
+        assert_eq!(list.members.len(), 20);
+        for (i, member) in members.iter().enumerate() {
+            assert_eq!(client.drips_list_entry(&list_id, &(i as u32)), Some(member.clone()));
+        }
+        // Past the last member, there's nothing.
+        assert_eq!(client.drips_list_entry(&list_id, &20), None);
+
+        // 100/sec split across 20 members → 5/sec each.
+        client.fund_drips_list(&owner, &list_id, &token_address, &100, &1000);
+        for member in &members {
+            let stream = client.get_drips_stream(&list_id, member).unwrap();
+            assert_eq!(stream.amt_per_sec, 5);
+        }
+    }
+
+    #[test]
     fn test_drips_list_ownership_transfer_emits_event_and_allows_new_owner_edits() {
         let env = Env::default();
         env.mock_all_auths();
@@ -11733,6 +11769,77 @@ mod test {
         client.split(&account, &token_address, &4000);
         assert_eq!(token.balance(&address_receiver), 1000);
         assert_eq!(token.balance(&nft_owner), 3000);
+    }
+
+    #[test]
+    fn test_split_collect_sweeps_drips_list_accrual_and_splits_it() {
+        // `split_collect` is the combined receive-and-split entry point
+        // (#1098): it reads what `account` has already earned from its
+        // incoming drips-list stream and sweeps it straight to the split
+        // receivers, without a separate `collect` round trip.
+        let env = Env::default();
+        env.mock_all_auths();
+        let (client, owner, member1, token_address, _) = setup(&env);
+        let token = TokenClient::new(&env, &token_address);
+        let receiver_a = Address::generate(&env);
+        let receiver_b = Address::generate(&env);
+
+        let list_id =
+            client.create_drips_list(&owner, &soroban_sdk::String::from_str(&env, "Payees"));
+        client.add_to_drips_list(&owner, &list_id, &member1);
+        // 1 member -> 100/sec, funded with a 1000-unit top-up.
+        client.fund_drips_list(&owner, &list_id, &token_address, &100, &1000);
+
+        // 50s at 100/sec would be 5000, but the funder only topped up 1000,
+        // so collectable_amount caps at the funded (and actually-held) balance.
+        set_time(&env, env.ledger().timestamp() + 50);
+
+        let curr_receivers = soroban_sdk::vec![
+            &env,
+            SplitReceiver::Address(AddressSplitsReceiver {
+                receiver: receiver_a.clone(),
+                weight: 300_000,
+            }),
+            SplitReceiver::Address(AddressSplitsReceiver {
+                receiver: receiver_b.clone(),
+                weight: 700_000,
+            }),
+        ];
+
+        let (collected, split_to_others) =
+            client.split_collect(&member1, &token_address, &curr_receivers);
+        assert_eq!(collected, 1000);
+        assert_eq!(split_to_others, 1000);
+        assert_eq!(token.balance(&receiver_a), 300); // 30% of 1000
+        assert_eq!(token.balance(&receiver_b), 700); // 70% of 1000
+
+        // The contract's own balance is now fully swept out, so a second
+        // call -- same elapsed time, same stream config -- sweeps nothing.
+        let (collected_again, split_to_others_again) =
+            client.split_collect(&member1, &token_address, &curr_receivers);
+        assert_eq!(collected_again, 0);
+        assert_eq!(split_to_others_again, 0);
+        assert_eq!(token.balance(&receiver_a), 300);
+        assert_eq!(token.balance(&receiver_b), 700);
+    }
+
+    #[test]
+    fn test_split_collect_empty_receivers_is_a_noop() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let (client, owner, member1, token_address, _) = setup(&env);
+
+        let list_id =
+            client.create_drips_list(&owner, &soroban_sdk::String::from_str(&env, "Empty"));
+        client.add_to_drips_list(&owner, &list_id, &member1);
+        client.fund_drips_list(&owner, &list_id, &token_address, &100, &1000);
+        set_time(&env, env.ledger().timestamp() + 50);
+
+        let empty_receivers: Vec<SplitReceiver> = Vec::new(&env);
+        let (collected, split_to_others) =
+            client.split_collect(&member1, &token_address, &empty_receivers);
+        assert_eq!(collected, 0);
+        assert_eq!(split_to_others, 0);
     }
 
     #[test]
