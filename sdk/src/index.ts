@@ -16,6 +16,8 @@ export {
   formatSchedule,
   formatRate,
   formatCycleDuration,
+  isStellarAddress,
+  formatXlm,
 } from "./utils";
 export type { ScheduleSummary } from "./utils";
 export { isScheduleRevoked, ProfileError } from "./types";
